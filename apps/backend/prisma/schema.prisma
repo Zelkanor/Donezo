@@ -1,0 +1,138 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output = "../generated/prisma/client"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+enum WorkspaceRole {
+  ADMIN
+  MODERATOR
+  MEMBER
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum Status {
+ PENDING
+ IN_PROGRESS
+ COMPLETED
+ CANCELLED
+}
+
+enum InviteStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  CANCELLED
+}
+
+model User {
+  id              String        @id @default(auto()) @map("_id") @db.ObjectId
+  firstName       String
+  lastName        String?
+  userName        String       
+  countryCode     String?
+  phoneNumber     String?            
+  email           String        @unique
+  password        String
+  refreshToken    String?
+  emailVerified   Boolean       @default(false)
+  profileImageUrl String? 
+  createdTasks    Task[]        @relation("CreatedBy") 
+  assignedTasks   Task[]        @relation("AssignedTo")
+  invited         Invitation[]  @relation("InvitedBy")
+  workspaceMemberships WorkspaceMember[] 
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+model Workspace {
+   id            String            @id @default(auto()) @map("_id") @db.ObjectId
+  name           String
+  slug           String            @unique
+  members        WorkspaceMember[]
+  tasks          Task[]            
+  invitations    Invitation[]
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+}
+
+model WorkspaceMember {
+  id             String           @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String           @db.ObjectId
+  workspaceId    String           @db.ObjectId
+  role           WorkspaceRole
+  user           User             @relation(fields: [userId], references: [id])
+  workspace      Workspace        @relation(fields: [workspaceId], references: [id])
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId], name: "workspaceId")
+}
+
+model Invitation {
+  id            String         @id @default(auto()) @map("_id") @db.ObjectId
+  email         String
+  workspaceId   String        @db.ObjectId
+  invitedById   String        @db.ObjectId
+  status        InviteStatus  @default(PENDING)
+  token         String        @unique
+  expiresAt     DateTime
+  invitedBy     User          @relation("InvitedBy", fields: [invitedById], references: [id])
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id])
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([email], name: "inviteEmail")
+}
+
+
+model Todo{
+  id          String      @id @default(auto()) @map("_id") @db.ObjectId
+  text        String
+  completed   Boolean     @default(false)
+  taskId      String      @db.ObjectId
+  task        Task        @relation("TaskTodo",fields: [taskId], references: [id], onDelete: Cascade)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  @@index([taskId], name: "taskId")
+}
+
+model Task{
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  title         String
+  description   String?
+  priority      Priority  @default(MEDIUM)
+  status        Status    @default(PENDING)
+  dueDate       DateTime
+  assignedTo    String    @db.ObjectId  
+  assignee      User      @relation("AssignedTo",fields: [assignedTo], references: [id],onDelete: Cascade)
+  createdBy     String    @db.ObjectId
+  creator       User      @relation("CreatedBy",fields: [createdBy], references: [id],onDelete: Cascade)
+  workspaceId   String    @db.ObjectId
+  workspace     Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  attachments   String[]
+  todoCheckList Todo[]  @relation("TaskTodo")
+  progress      Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([assignedTo], name: "assignedTo")
+  @@index([createdBy], name: "createdBy")
+  @@index([workspaceId], name: "taskWorkspace")
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@repo/common",
+  "version": "1.0.0",
+  "description": "",
+  "exports": {
+    ".": "./build/index.js"
+
+  },
+  "scripts": {
+    "build": "tsc"
+  },
+  "author": "Nikhil",
+  "devDependencies": {
+    "@repo/typescript-config": "workspace:*"
+  },
+  "license": "ISC"
+}
