@@ -1,0 +1,13 @@
+{
+  "extends": ["//"],
+  "tasks": {
+    "build": {
+      "outputs": ["build/**"]
+    },
+    "devCommon": {
+      "cache": false,
+      "persistent": true,
+      "outputs": ["build/**"]
+    }
+  }
+}

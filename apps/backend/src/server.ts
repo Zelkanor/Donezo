@@ -4,6 +4,7 @@ import morgan from "morgan";
 import cors from "cors";
 import compression from "compression";
 import dotenv from "dotenv";
+import cookieParser from "cookie-parser";
 dotenv.config();
 
 
@@ -13,7 +14,7 @@ export const createServer = (): Express => {
     app.disable("x-powered-by");
 
     app.use(compression());
-
+    app.use(cookieParser());
     // Enable request body parsing
     app.use(urlencoded({ extended: true }));
     app.use(express.json());

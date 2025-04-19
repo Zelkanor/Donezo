@@ -22,26 +22,24 @@ export const UpdateUserProfileSchema = z.object({
     phoneNumber: z.string().trim().regex(/^[0-9]{6,15}$/, { message: 'Phone number must be 6 to 15 digits long' }).optional(),
 });
 
-export const forgotPasswordSchema = LoginSchema.pick({password: true})
-
+export const forgotPasswordSchema = LoginSchema.pick({email: true})
+export const resetPasswordSchema = LoginSchema.pick({password: true}).extend({
+    token: z.string().trim().min(1, { message: 'Token is required' }),
+});
 
 export type SignUpResponse = {
     id: string,
+    email: string,
     accessToken: string,
-    refreshToken: string,
 }
-
 export type LoginResponse = SignUpResponse
+export type RefreshResponse = SignUpResponse;
 
-
-export type JWTPayload = {
-    id: string,
-    sessionId: string,
-    iat: number,
-}
 
 export type SignUpType = z.infer<typeof SignUpSchema>;
 export type LoginType = z.infer<typeof LoginSchema>;
 
+
 export type UpdateUserProfileType = z.infer<typeof UpdateUserProfileSchema>;
 export type ForgotPasswordType = z.infer<typeof forgotPasswordSchema>;
+export type ResetPasswordType = z.infer<typeof resetPasswordSchema>;

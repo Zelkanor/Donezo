@@ -1,11 +1,19 @@
 import { Router } from "express";
 import { UserController } from "../controllers/userController";
-import upload from "../middlewares/auth/middlewares/uploadMiddleware";
-const userRoute:Router = Router();
+import upload from "../middlewares/auth/uploadMiddleware";
+import { authMiddleware } from "../middlewares/auth/authMiddleware";
+import { updateUserProfileValidator } from "../middlewares/validators/validator";
+const userRouter:Router = Router();
+
+const userInsatance = UserController.getInstance();
 
 
-const userController = UserController.getInstance();
-userRoute.post("/upload-image",upload.single("image"),(req,res)=>{
+userRouter.get("/profile",authMiddleware, userInsatance.getUserProfile);
+userRouter.patch("/profile",authMiddleware,updateUserProfileValidator, userInsatance.updateUserProfile);
+userRouter.delete("/profile",authMiddleware, userInsatance.deleteUserProfile);
+
+
+userRouter.post("/upload-image",upload.single("image"),(req,res)=>{
     if(!req.file) {
         return res.status(400).json({ message: "No file uploaded" });
     }
@@ -13,4 +21,4 @@ userRoute.post("/upload-image",upload.single("image"),(req,res)=>{
     res.status(200).json({ type:"success" ,message: "File uploaded successfully", imageUrl });
 });
 
-export default userRoute;
+export default userRouter;

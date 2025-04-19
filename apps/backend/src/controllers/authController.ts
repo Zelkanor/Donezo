@@ -1,35 +1,31 @@
-import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
-import { JWTPayload, LoginResponse, LoginType, SignUpResponse, SignUpType, UpdateUserProfileType } from '@repo/common';
+import { ForgotPasswordType, LoginResponse, LoginType, ResetPasswordType, SignUpResponse, SignUpType } from '@repo/common';
 import { Request, Response } from 'express';
 import { PrismaInstance } from '../config/prisma_client';
 import { AuthError, AuthErrorCodes } from '../errors/error';
 import {PrismaClient} from '../../generated/prisma/client'
+import { IAuthController } from '../config/interfaces/auth.interface';
+import { ApiResponse, AuthApiResponse, JwtPayload } from '../config/types/api_response.interface';
+import { RedisClient } from '../config/redis_client';
+import { generateAccessToken, generatePasswordResetToken, generateRefreshToken, sendMail, verifyPasswordResetToken, verifyToken } from '../utils/utils';
+import { generatePasswordResetEmail } from '../config/email/mail_templates';
 
 
 
-//Generate JWT Access token
-export const generateAccessToken = (payload:JWTPayload) => {
-  return jwt.sign(payload, process.env.JWT_ACCESS_SECRET as string, {
-    expiresIn: '10m',
-  });
-};
-
-
-//Generate JWT Refresh token
-export const generateRefreshToken = (payload:JWTPayload) => {
-  return jwt.sign(payload, process.env.JWT_REFRESH_SECRET as string, {
-    expiresIn: '30d',
-  });
-};
-
-
-export class AuthController{
+export class AuthController implements IAuthController{
  private prisma: PrismaClient;
  private static instance: AuthController | null = null;
  private constructor(){
     this.prisma = PrismaInstance.getInstance();
+  this.registerUser = this.registerUser.bind(this);
+  this.loginUser = this.loginUser.bind(this);
+  this.getRefreshToken = this.getRefreshToken.bind(this);
+  this.forgotPassword = this.forgotPassword.bind(this);
+  this.logoutUser = this.logoutUser.bind(this);
+  this.resetPassword = this.resetPassword.bind(this);
+  this.forgotPassword = this.forgotPassword.bind(this);
   }
+  
 
   public static getInstance(): AuthController {
     if (!this.instance) {
@@ -42,9 +38,9 @@ export class AuthController{
   // @desc Register a new user
   // @route POST /api/v1/auth/register
   // @access Public
-  public registerUser = async (req:Request, res: Response) => {
+  async registerUser(req:Request, res: Response):Promise<Response<AuthApiResponse<SignUpResponse>>> { 
 
-  const body: SignUpType = req.body;
+    const body: SignUpType = req.body;
 
   try {
       //Check if user already exists
@@ -61,6 +57,9 @@ export class AuthController{
       const salt = await bcrypt.genSalt(10);
       const hashedPassword = await bcrypt.hash(body.password, salt);
 
+      const deviceId = crypto.randomUUID();
+   
+
       //Create user
       const user = await this.prisma.user.create({
         data: {
@@ -75,19 +74,28 @@ export class AuthController{
         },
       });
 
-      const jwtAccessPayload: JWTPayload = {
+       //Save deviceId in redis
+         await RedisClient.getInstance().set(`session:${user.id}`, deviceId, 'EX', 60 * 60 * 24 * 7);
+         await this.prisma.session.create({
+          data: {
+            userId: user.id,
+            deviceId: deviceId,
+          },
+        });
+
+
+      const jwtAccessPayload: JwtPayload = {
         id: user.id,
-        sessionId: "dasdasd",
+        deviceId: deviceId,
         iat: Math.floor(Date.now() / 1000),
       }
 
-      const jwtRefreshPayload: JWTPayload = {
+      const jwtRefreshPayload: JwtPayload = {
         id: user.id,
-        sessionId: "dasdasd",
+        deviceId: deviceId,
         iat: Math.floor(Date.now() / 1000),
       }
 
-      //TODO: Save refresh token in database and sessions
       //Generate token
       const accesToken = generateAccessToken(jwtAccessPayload);
       const refreshToken = generateRefreshToken(jwtRefreshPayload);
@@ -95,9 +103,16 @@ export class AuthController{
       //Send response
       const response:SignUpResponse = {
         id: user.id,
+        email: user.email,
         accessToken: accesToken,
-        refreshToken: refreshToken,
       }
+      res.cookie('refreshToken',refreshToken,{
+        httpOnly: true,
+        //secure: process.env.NODE_ENV === 'production',
+        secure: false,
+        sameSite: 'strict',
+        maxAge: 60 * 60 * 24 * 7 * 1000, // 7 days
+     });
       return res.status(201).json({type: "success",message: "User registered successfully",data: response});
 
   } catch (error) {
@@ -107,13 +122,13 @@ export class AuthController{
         }
         return res.status(500).json({type: "server-error",message: "Internal server error"});
       }
-};
+}
 
 
   // @desc Login user
   // @route POST /api/v1/auth/login   
   // @access Public
-  public loginUser = async (req: Request, res: Response) => {
+  async loginUser(req: Request, res: Response):Promise<Response<AuthApiResponse<LoginResponse>>> {
     const body:LoginType = req.body;
     try {
       const user = await this.prisma.user.findUnique({where:{email:body.email}});
@@ -127,20 +142,34 @@ export class AuthController{
         throw new AuthError(AuthErrorCodes.INVALID_CREDENTIALS);
       }
 
-      //Generate token
-      const jwtAccessPayload: JWTPayload = {
+      const deviceId = crypto.randomUUID();
+      //Save deviceId in redis
+      await RedisClient.getInstance().set(`session:${user.id}`, deviceId, 'EX', 60 * 60 * 24 * 7); 
+      await this.prisma.session.deleteMany({
+        where: {
+          userId: user.id,
+        },
+      })
+      await this.prisma.session.create({
+        data: {
+          userId: user.id,
+          deviceId: deviceId,
+        },
+      });
+
+      //Confgure JWT payload
+      const jwtAccessPayload: JwtPayload = {
         id: user.id,
-        sessionId: "dasdasd",
+        deviceId: deviceId,
         iat: Math.floor(Date.now() / 1000),
       }
 
-      const jwtRefreshPayload: JWTPayload = {
+      const jwtRefreshPayload: JwtPayload = {
         id: user.id,
-        sessionId: "dasdasd",
+        deviceId: deviceId,
         iat: Math.floor(Date.now() / 1000),
       }
 
-      //TODO: Save refresh token in database and sessions
       //Generate token
       const accesToken = generateAccessToken(jwtAccessPayload);
       const refreshToken = generateRefreshToken(jwtRefreshPayload);
@@ -148,11 +177,17 @@ export class AuthController{
       //Send response
       const response:LoginResponse = {
         id: user.id,
+        email: user.email,
         accessToken: accesToken,
-        refreshToken: refreshToken,
       }
-
-      return res.status(200).json({type: "success",message: "User logged in successfully",data: response});
+       res.cookie('refreshToken',refreshToken,{
+          httpOnly: true,
+          //secure: process.env.NODE_ENV === 'production',
+          secure: false,
+          sameSite: 'strict',
+          maxAge: 60 * 60 * 24 * 7 * 1000, // 7 days
+       });
+       return res.status(200).json({status: "success",message: "User logged in successfully",data: response});
     } catch (error) {
       console.log("Error in registerUser: ", error);
       if(error instanceof AuthError){
@@ -163,82 +198,126 @@ export class AuthController{
   }
 
 
-  // @desc Get user profile
-  // @route GET /api/v1/auth/profile
-  // @access Private
-  public getUserProfile = async (req: Request, res: Response) => {
-    try {
-      if(!req.user) {
-        throw new AuthError(AuthErrorCodes.UNAUTHORIZED);
-      }
-      const user = await this.prisma.user.findUnique({where:{id: req.user.id},
-      select:{
-        id: true,
-        email: true,
-        firstName: true,
-        lastName: true,
-        profileImageUrl: true,
-        countryCode: true,
-        phoneNumber: true,
-        emailVerified: true,
-      }
-      });
-      if(!user) {
-       throw new AuthError(AuthErrorCodes.USER_NOT_FOUND);
-      }
-      res.json({type: "success",message: "User profile fetched successfully",data: user});
-    } catch (error) {
-      console.log("Error in fetching user Profile: ", error);
-      if(error instanceof AuthError){
-        return res.status(error.statusCode).json({type: error.status,message: error.message});
-      }
-      return res.status(500).json({type: "server-error",message: "Internal server error"});
-    }
-  };
-
-  // @desc Update user profile
-  // @route PUT /api/v1/auth/profile
-  // @access Private
-  public updateUserProfile = async (req: Request, res: Response) => {
-    const body:UpdateUserProfileType = req.body;
-    try {
-      if(!req.user) {
-        throw new AuthError(AuthErrorCodes.UNAUTHORIZED);
-      }
-      const user = await this.prisma.user.update({
-        where: { id: req.user.id },
-        data: {
-          userName: body.userName,
-          countryCode: body.countryCode,
-          phoneNumber: body.phoneNumber,
-        },
-      });
-      res.json({type: "success",message: "User profile updated successfully"});
-    } catch (error) {
-      console.log("Error in fetching user Profile: ", error);
-      if(error instanceof AuthError){
-        return res.status(error.statusCode).json({type: error.status,message: error.message});
-      }
-      return res.status(500).json({type: "server-error",message: "Internal server error"});
-    }
-  };
-
-
-  // @desc Delete user profile
-  // @route DELETE /api/v1/auth/profile
-  // @access Private
-  public deleteUserProfile = async (req: Request, res: Response) => {};
-
-
   // @desc Refresh token
   // @route POST /api/v1/auth/refresh-token
   // @access Public
-  public getRefreshToken = async (req: Request, res: Response) => {};
+  public async getRefreshToken(req: Request, res: Response):Promise<Response<ApiResponse>>{
+    try {
+      //Verify refresh token
+      const decoded = verifyToken(req.cookies.refreshToken,"refresh");
+      const sessionDevice = await RedisClient.getInstance().get(`session:${decoded.id}`);
+      if(sessionDevice !== decoded.deviceId){
+        throw new AuthError(AuthErrorCodes.INVALID_SESSION);
+      }
+    
+
+      //Generate new token
+      const jwtAccessPayload: JwtPayload = {
+        id: decoded.id,
+        deviceId: decoded.deviceId,
+        iat: Math.floor(Date.now() / 1000),
+      }
+
+      const accesToken = generateAccessToken(jwtAccessPayload);
+
+      //Send response
+      return res.status(200).json({type: "success",message: "Token refreshed successfully",data:{accessToken: accesToken}});
+    } catch (error) {
+      console.log("Error in getRefreshToken: ", error);
+      if(error instanceof AuthError){
+        return res.status(error.statusCode).json({type: error.status,message: error.message});
+      }
+      return res.status(500).json({type: "server-error",message: "Internal server error"});
+    }
+  };
+
 
   // @desc Forgot password
   // @route POST /api/v1/auth/forgot-password
   // @access Public
-  public forgotPassword = async (req: Request, res: Response) => {};
+  public async forgotPassword (req: Request, res: Response): Promise<Response<ApiResponse>>{
+    const body:ForgotPasswordType = req.body;
+    try {
+      const user = await this.prisma.user.findUnique({ where: { email:body.email }});
+
+      if (!user) {
+        throw new AuthError(AuthErrorCodes.USER_NOT_FOUND);
+      }
+      //Generate password reset token
+      const passwordResetToken = generatePasswordResetToken(user.id);
+      await RedisClient.getInstance().set(`reset-token:${user.id}`, passwordResetToken, 'EX', 60 * 15); // 15 minutes
+      //SEND EMAIL
+      await sendMail({
+        from: process.env.EMAIL_FROM as string,
+        to: body.email,
+        subject: 'Password Reset',
+        html: generatePasswordResetEmail(user.firstName, passwordResetToken),
+      });
+      return res.status(200).json({ status: 'success', message: 'Password reset link sent to email' });
+    } catch (error) {
+      console.error('Error in forgotPassword:', error);
+      if (error instanceof AuthError) {
+        return res.status(error.statusCode).json({ type: error.status, message: error.message });
+      }
+      return res.status(500).json({ type: 'server-error', message: 'Internal server error' });
+    }
+  };
+
+  // @desc Reset password
+  // @route POST /api/v1/auth/reset-password
+  // @access Public
+  public async resetPassword (req: Request, res: Response): Promise<Response<ApiResponse>>{
+    const body: ResetPasswordType = req.body;
+   try {
+    const payload = verifyPasswordResetToken(body.token);
+    const storedToken = await RedisClient.getInstance().get(`reset-token:${payload.id}`);
+
+    if (!storedToken || storedToken !== body.token) {
+      throw new AuthError(AuthErrorCodes.INVALID_OR_EXPIRED_TOKEN);
+    }
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(body.password, salt);
+
+    await this.prisma.user.update({
+      where: { id: payload.id },
+      data: { password: hashedPassword },
+    });
+    await RedisClient.getInstance().del(`reset-token:${payload.id}`); // Delete the token from Redis
+    return res.status(200).json({ type: 'success', message: 'Password reset successful' });
+   } catch (error) {
+    console.error('Error in resetPassword:', error);
+    if (error instanceof AuthError) {
+      return res.status(error.statusCode).json({ status: error.status, message: error.message });
+    }
+    return res.status(500).json({ status: 'server-error', message: 'Internal server error' });
+   }
+  };
+
+  // @desc Logout user
+  // @route POST /api/v1/auth/logout
+  // @access Private
+  public async logoutUser (req: Request, res: Response): Promise<Response<ApiResponse>>{
+    try {
+
+        const decoded = verifyToken(req.cookies.refreshToken,"refresh");
+        await RedisClient.getInstance().del(`session:${decoded.id}`);
+        await this.prisma.session.deleteMany({
+          where: {
+            userId: decoded.id,
+          },
+        });
+        res.clearCookie('refreshToken');
+        return res.status(200).json({type: "success",message: "User logged out successfully"});
+
+    } catch (error) {
+      console.log("Error in logoutUser: ", error);
+      if(error instanceof AuthError){
+        return res.status(error.statusCode).json({type: error.status,message: error.message});
+      }
+      return res.status(500).json({type: "server-error",message: "Internal server error"});
+    }
+   
+  };
 } 
 
 
