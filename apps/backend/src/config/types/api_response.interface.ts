@@ -20,5 +20,6 @@ export interface JwtPayload {
     id: string;
     deviceId: string;
     iat: number;
+    isRefreshToken: boolean;
   }
 

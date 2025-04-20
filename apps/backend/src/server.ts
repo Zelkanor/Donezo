@@ -19,7 +19,7 @@ export const createServer = (): Express => {
     app.use(urlencoded({ extended: true }));
     app.use(express.json());
 
-    // Logging HTTP requests (skip in testing/production if desired)
+    // Logging HTTP requests 
     app.use(morgan("dev"));
 
     // Cross-Origin Resource Sharing

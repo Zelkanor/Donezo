@@ -37,6 +37,8 @@ export enum AuthErrorCodes {
   TOKEN_INVALID = "auth/token-invalid",
   INVALID_SESSION = "auth/invalid-session",
   INVALID_OR_EXPIRED_TOKEN = "auth/invalid-or-expired-token",
+  SUSPICIOUS_ACTIVITY = "auth/suspicious",
+  SESSION_EXPIRED = "auth/session-expired",
 }
 
 export class AuthError extends AppError {
@@ -62,6 +64,10 @@ export class AuthError extends AppError {
         return { message: "Session is invalid", statusCode: 401 };
       case AuthErrorCodes.INVALID_OR_EXPIRED_TOKEN:
         return { message: "Invalid or expired token", statusCode: 401 };
+      case AuthErrorCodes.SUSPICIOUS_ACTIVITY:
+        return { message: "Suspicious activity detected", statusCode: 403 };
+      case AuthErrorCodes.SESSION_EXPIRED:
+        return { message: "Session has expired", statusCode: 401 };
       default:
         return { message: "Authentication error", statusCode: 401 };
     }

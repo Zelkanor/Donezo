@@ -14,9 +14,9 @@ export const errorDetails = (data:SafeParseReturnType<any,any>) => {
 }
 
 //Generate JWT Access token
-export const generateAccessToken = (payload:JwtPayload) => {
+export const generateAccessToken = (payload:JwtPayload,expiry?:string) => {
   return jwt.sign(payload, process.env.JWT_ACCESS_SECRET as string, {
-    expiresIn: '10m',
+    expiresIn: expiry!== undefined ? '15m' : expiry,
   });
 };
 

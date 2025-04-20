@@ -54,10 +54,12 @@ export class AuthController implements IAuthController{
       }
 
       //Hash password
-      const salt = await bcrypt.genSalt(10);
+      const salt = await bcrypt.genSalt(12);
       const hashedPassword = await bcrypt.hash(body.password, salt);
 
       const deviceId = crypto.randomUUID();
+      const ipAddress = req.ip; // Get the IP address from the request
+      const userAgent = req.headers['user-agent'] || 'unknown';
    
 
       //Create user
@@ -71,29 +73,37 @@ export class AuthController implements IAuthController{
           profileImageUrl: body.profileImageUrl,
           countryCode: body.countryCode,
           phoneNumber: body.phoneNumber,
+          sessions:{
+            create: {
+              deviceId,
+              ipAddress,
+              userAgent,
+            }
+          }
         },
+        include:{
+          sessions: true
+        }
       });
 
        //Save deviceId in redis
-         await RedisClient.getInstance().set(`session:${user.id}`, deviceId, 'EX', 60 * 60 * 24 * 7);
-         await this.prisma.session.create({
-          data: {
-            userId: user.id,
-            deviceId: deviceId,
-          },
-        });
+        await RedisClient.getInstance().set(`session:${user.id}:${deviceId}`,JSON.stringify({
+          ipAddress,
+          userAgent,
+          deviceId,
+          lastActiveAt: new Date().toISOString(),
+        }), 'EX', 60 * 60 * 24 * 7);
 
 
       const jwtAccessPayload: JwtPayload = {
         id: user.id,
         deviceId: deviceId,
         iat: Math.floor(Date.now() / 1000),
+        isRefreshToken: false,
       }
 
       const jwtRefreshPayload: JwtPayload = {
-        id: user.id,
-        deviceId: deviceId,
-        iat: Math.floor(Date.now() / 1000),
+        ...jwtAccessPayload
       }
 
       //Generate token
@@ -111,6 +121,8 @@ export class AuthController implements IAuthController{
         //secure: process.env.NODE_ENV === 'production',
         secure: false,
         sameSite: 'strict',
+        path:'/api/v1/auth/refresh-token',
+        //domain: process.env.COOKIE_DOMAIN,
         maxAge: 60 * 60 * 24 * 7 * 1000, // 7 days
      });
       return res.status(201).json({type: "success",message: "User registered successfully",data: response});
@@ -142,18 +154,39 @@ export class AuthController implements IAuthController{
         throw new AuthError(AuthErrorCodes.INVALID_CREDENTIALS);
       }
 
-      const deviceId = crypto.randomUUID();
-      //Save deviceId in redis
-      await RedisClient.getInstance().set(`session:${user.id}`, deviceId, 'EX', 60 * 60 * 24 * 7); 
+      // Invalidate all previous sessions for single-device login
       await this.prisma.session.deleteMany({
         where: {
           userId: user.id,
         },
-      })
+      });
+       // Clear all Redis sessions for this user
+       const keys = await RedisClient.getInstance().keys(`session:${user.id}:*`);
+       if (keys.length > 0) {
+           await RedisClient.getInstance().del(keys);
+       }
+
+
+
+       //Create new session
+      const deviceId = crypto.randomUUID();
+      const ipAddress = req.ip; // Get the IP address from the request
+      const userAgent = req.headers['user-agent'] || 'unknown';
+      //Save deviceId in redis
+      await RedisClient.getInstance().set(`session:${user.id}:${deviceId}`, 
+        JSON.stringify({
+          ipAddress,
+          userAgent,
+          deviceId,
+          lastActiveAt: new Date().toISOString(),
+        }), 'EX', 60 * 60 * 24 * 7); 
+      
       await this.prisma.session.create({
         data: {
           userId: user.id,
           deviceId: deviceId,
+          ipAddress,
+          userAgent
         },
       });
 
@@ -162,23 +195,23 @@ export class AuthController implements IAuthController{
         id: user.id,
         deviceId: deviceId,
         iat: Math.floor(Date.now() / 1000),
+        isRefreshToken: false,
       }
 
       const jwtRefreshPayload: JwtPayload = {
-        id: user.id,
-        deviceId: deviceId,
-        iat: Math.floor(Date.now() / 1000),
+        ...jwtAccessPayload,
+        isRefreshToken: true,
       }
 
       //Generate token
-      const accesToken = generateAccessToken(jwtAccessPayload);
+      const accessToken = generateAccessToken(jwtAccessPayload);
       const refreshToken = generateRefreshToken(jwtRefreshPayload);
 
       //Send response
       const response:LoginResponse = {
         id: user.id,
         email: user.email,
-        accessToken: accesToken,
+        accessToken
       }
        res.cookie('refreshToken',refreshToken,{
           httpOnly: true,
@@ -186,6 +219,8 @@ export class AuthController implements IAuthController{
           secure: false,
           sameSite: 'strict',
           maxAge: 60 * 60 * 24 * 7 * 1000, // 7 days
+          path: '/api/v1/auth/refresh-token',
+          //domain: process.env.COOKIE_DOMAIN
        });
        return res.status(200).json({status: "success",message: "User logged in successfully",data: response});
     } catch (error) {
@@ -205,32 +240,129 @@ export class AuthController implements IAuthController{
     try {
       //Verify refresh token
       const decoded = verifyToken(req.cookies.refreshToken,"refresh");
-      const sessionDevice = await RedisClient.getInstance().get(`session:${decoded.id}`);
-      if(sessionDevice !== decoded.deviceId){
-        throw new AuthError(AuthErrorCodes.INVALID_SESSION);
-      }
-    
+      if (!decoded.isRefreshToken) {
+        throw new AuthError(AuthErrorCodes.TOKEN_INVALID);
+    }
 
+      //Check if session exists in redis
+      let sessionValid = false;
+      try {
+         const sessionData = await RedisClient.getInstance().get(`session:${decoded.id}:${decoded.deviceId}`);
+          if (sessionData) {
+            const {ipAddress,deviceId,userAgent} = JSON.parse(sessionData);
+            const maxSessionAge = 7 * 24 * 60 * 60 * 1000;
+            if (ipAddress !== req.ip || userAgent !== req.headers['user-agent'] || deviceId !== decoded.deviceId) {
+              // Potential security issue - force reauthentication
+              await RedisClient.getInstance().del(`session:${decoded.id}:${decoded.deviceId}`);
+              throw new AuthError(AuthErrorCodes.SUSPICIOUS_ACTIVITY);
+          } else {
+            sessionValid = true;
+          }
+          }
+      } catch (redisError) {
+        console.warn('Redis error:', redisError);
+        if(redisError instanceof AuthError) {
+          res.clearCookie('refreshToken');
+          return res.status(redisError.statusCode).json({type: redisError.status,message: redisError.message});
+        }
+        // 2. Fallback to Prisma if Redis fails
+        try {
+          const dbSession = await this.prisma.session.findFirst({
+            where: {
+                userId: decoded.id,
+                deviceId: decoded.deviceId,
+            }
+        });
+          if (dbSession) {
+            if (dbSession.ipAddress !== req.ip || dbSession.userAgent !== req.headers['user-agent'] || dbSession.deviceId !== decoded.deviceId) {
+              // Potential security issue - force reauthentication
+              await RedisClient.getInstance().del(`session:${decoded.id}:${decoded.deviceId}`);
+              await this.prisma.session.deleteMany({
+                where: {
+                  userId: decoded.id,
+                  deviceId: decoded.deviceId
+                }
+              });
+              throw new AuthError(AuthErrorCodes.SUSPICIOUS_ACTIVITY);
+          } else {
+            sessionValid = true;
+          }
+          }
+        } catch (dbError) {
+          console.error("Both Redis and DB failed", dbError);
+          // 3. If both stores fail, implement emergency protocol
+          return this.handleDegradedRefresh(res, decoded);
+        }
+      }
+     
+      if (!sessionValid) {
+        throw new AuthError(AuthErrorCodes.SESSION_EXPIRED);
+    }
+       
       //Generate new token
       const jwtAccessPayload: JwtPayload = {
         id: decoded.id,
         deviceId: decoded.deviceId,
         iat: Math.floor(Date.now() / 1000),
+        isRefreshToken: false,
+      }
+      const jwtRefreshPayload: JwtPayload = {
+        ...jwtAccessPayload,
+        isRefreshToken: true,
       }
 
-      const accesToken = generateAccessToken(jwtAccessPayload);
 
+      const accesToken = generateAccessToken(jwtAccessPayload);
+      const refreshToken = generateRefreshToken(jwtRefreshPayload);
+      res.cookie('refreshToken',refreshToken,{
+        httpOnly: true,
+        //secure: process.env.NODE_ENV === 'production',
+        secure: false,
+        sameSite: 'strict',
+        maxAge: 60 * 60 * 24 * 7 * 1000, // 7 days
+        path: '/api/v1/auth/refresh-token',
+        //domain: process.env.COOKIE_DOMAIN
+     });
       //Send response
       return res.status(200).json({type: "success",message: "Token refreshed successfully",data:{accessToken: accesToken}});
     } catch (error) {
-      console.log("Error in getRefreshToken: ", error);
+      console.error("Error in getRefreshToken: ", error);
       if(error instanceof AuthError){
+        if (error.status === AuthErrorCodes.SESSION_EXPIRED) {
+          res.clearCookie('refreshToken');
+      }
         return res.status(error.statusCode).json({type: error.status,message: error.message});
       }
       return res.status(500).json({type: "server-error",message: "Internal server error"});
     }
   };
 
+  private handleDegradedRefresh(res: Response, decoded: JwtPayload): Response {
+    // Emergency short-lived token (5-15 minutes) with limited scope
+    const emergencyToken = generateAccessToken({
+        id: decoded.id,
+        deviceId: decoded.deviceId,
+        iat: Math.floor(Date.now() / 1000),
+        isRefreshToken: false,
+    }, '10m'); // Short expiry
+
+    // Log the incident
+    // monitoring.log('AUTH_DEGRADED', {
+    //     userId: decoded.id,
+    //     deviceId: decoded.deviceId
+    // });
+
+    return res.status(200)
+        .set('X-Auth-Mode', 'degraded')
+        .json({
+            type: "warning",
+            message: "Service temporarily degraded - please reauthenticate later",
+            data: {
+                accessToken: emergencyToken,
+                expiresIn: "15 minutes"
+            }
+        });
+}
 
   // @desc Forgot password
   // @route POST /api/v1/auth/forgot-password
@@ -300,17 +432,22 @@ export class AuthController implements IAuthController{
     try {
 
         const decoded = verifyToken(req.cookies.refreshToken,"refresh");
-        await RedisClient.getInstance().del(`session:${decoded.id}`);
+        await RedisClient.getInstance().del(`session:${decoded.id}:${decoded.deviceId}`);
         await this.prisma.session.deleteMany({
           where: {
             userId: decoded.id,
+            deviceId: decoded.deviceId,
           },
         });
-        res.clearCookie('refreshToken');
+        res.clearCookie('refreshToken', {
+          path: '/api/v1/auth/refresh-token',
+          //domain: process.env.COOKIE_DOMAIN
+      });
         return res.status(200).json({type: "success",message: "User logged out successfully"});
 
     } catch (error) {
       console.log("Error in logoutUser: ", error);
+      res.clearCookie('refreshToken');
       if(error instanceof AuthError){
         return res.status(error.statusCode).json({type: error.status,message: error.message});
       }

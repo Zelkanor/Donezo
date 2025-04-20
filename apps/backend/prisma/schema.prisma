@@ -69,8 +69,11 @@ model Session{
   userId        String      @db.ObjectId
   user          User        @relation(fields: [userId], references: [id])
   deviceId     String
-  createdAt    DateTime   @default(now())
-  @@index([userId], name: "userId")
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime   @default(now())
+  lastActive    DateTime    @updatedAt
+  @@index([userId,deviceId], name: "userId")
 }
 
 model Workspace {
