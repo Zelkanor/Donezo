@@ -5,6 +5,7 @@ import { Resend } from 'resend';
 import { mailOptions } from "../config/types/email_type";
 import { EmailSendError } from "../errors/error";
 
+
 export const errorDetails = (data:SafeParseReturnType<any,any>) => {
     const messages = data.error!.errors.map(e => ({
                 field: e.path.join("."),
@@ -14,9 +15,14 @@ export const errorDetails = (data:SafeParseReturnType<any,any>) => {
 }
 
 //Generate JWT Access token
-export const generateAccessToken = (payload:JwtPayload,expiry?:string) => {
+export const generateAccessToken = (payload:JwtPayload,emergencyToken?:boolean ) => {
+  if (emergencyToken) {
+    return jwt.sign(payload, process.env.JWT_ACCESS_SECRET as string, {
+      expiresIn: '10m',
+    });
+  }
   return jwt.sign(payload, process.env.JWT_ACCESS_SECRET as string, {
-    expiresIn: expiry!== undefined ? '15m' : expiry,
+    expiresIn:'15m',
   });
 };
 

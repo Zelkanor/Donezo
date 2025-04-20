@@ -12,33 +12,41 @@ export const authMiddleware = async (req:Request,res:Response,next:NextFunction)
     try {
         let authHeader = req.headers.authorization;
         if(!authHeader || !authHeader.startsWith("Bearer")){
-            return res.status(401).json({status:"error",message:"Missing or malformed token"});
+            throw new AuthError(AuthErrorCodes.TOKEN_INVALID);
         }
         const token = authHeader.split(" ")[1];
         if(!token){
-            return res.status(401).json({status:"error",message:"Unauthorized"});
+            throw new AuthError(AuthErrorCodes.TOKEN_INVALID);
         }
         const decoded = verifyToken(token,"access") as JwtPayload;
-        const sessionDevice = await RedisClient.getInstance().get(`session:${decoded.id}:${decoded.deviceId}`);
-        if(sessionDevice ){
-            const data = JSON.parse(sessionDevice);
-            if(!data && data.deviceId !== decoded.deviceId){
-                await RedisClient.getInstance().del(`session:${decoded.id}:${decoded.deviceId}`);
-                throw new AuthError(AuthErrorCodes.INVALID_SESSION);
-            }
-            req.user ={
-                id:decoded.id,
-                deviceId:decoded.deviceId,
-                iat:decoded.iat,
-            };
-            next();
-        } else {
-            await RedisClient.getInstance().del(`session:${decoded.id}:${decoded.deviceId}`);
-            throw new AuthError(AuthErrorCodes.INVALID_SESSION);
+        const sessionKey = `session:${decoded.id}:${decoded.deviceId}`;
+        const sessionData = await RedisClient.getInstance().get(sessionKey);
+        if (!sessionData) {
+            throw new AuthError(AuthErrorCodes.SESSION_EXPIRED);
         }
-       
+        const { ipAddress, userAgent, deviceId } = JSON.parse(sessionData);
+
+        if (deviceId !== decoded.deviceId) {
+            await RedisClient.getInstance().del(sessionKey);
+            throw new AuthError(AuthErrorCodes.SUSPICIOUS_ACTIVITY);
+        }
+
+        // if (process.env.NODE_ENV === 'production') {
+        //     if (ipAddress !== req.ip || userAgent !== req.headers['user-agent']) {
+        //         await RedisClient.getInstance().del(sessionKey);
+        //         throw new AuthError(AuthErrorCodes.SUSPICIOUS_ACTIVITY);
+        //     }
+        // }
+        req.user ={
+            id:decoded.id,
+            deviceId:decoded.deviceId,
+            iat:decoded.iat,
+        };
+        next();
+
     } catch (error) {
-        console.log("error",error);
+        console.error("error",error);
+        res.clearCookie('accessToken');
         res.clearCookie('refreshToken');
         if(error instanceof jwt.TokenExpiredError){
             return res.status(401).json({status:"auth/token-expired",message: `Token expired at ${error.expiredAt}`});
@@ -46,7 +54,7 @@ export const authMiddleware = async (req:Request,res:Response,next:NextFunction)
         if(error instanceof AuthError){
             return res.status(error.statusCode).json({status:error.status,message:error.message});
         }
-        return res.status(401).json({status:"error",message:"Unauthorized"});
+        return res.status(401).json({status:"auth/unauthorized",message:"Authentication failed"});
     }
 }
 

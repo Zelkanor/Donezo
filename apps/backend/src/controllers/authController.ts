@@ -63,37 +63,46 @@ export class AuthController implements IAuthController{
    
 
       //Create user
-      const user = await this.prisma.user.create({
-        data: {
-          email: body.email,
-          password: hashedPassword,
-          firstName: body.firstName,
-          lastName: body.lastName,
-          userName: body.userName,
-          profileImageUrl: body.profileImageUrl,
-          countryCode: body.countryCode,
-          phoneNumber: body.phoneNumber,
-          sessions:{
-            create: {
-              deviceId,
-              ipAddress,
-              userAgent,
-            }
-          }
-        },
-        include:{
-          sessions: true
-        }
-      });
+      const user = await this.prisma.$transaction(async (prisma) => {
+        // Create user and session in DB
+        const user = await prisma.user.create({
+            data: {
+                email: body.email,
+                password: hashedPassword,
+                firstName: body.firstName,
+                lastName: body.lastName,
+                userName: body.userName,
+                profileImageUrl: body.profileImageUrl,
+                countryCode: body.countryCode,
+                phoneNumber: body.phoneNumber,
+                sessions: {
+                    create: {
+                        deviceId,
+                        ipAddress,
+                        userAgent
+                    }
+                }
+            },
+            include: { sessions: true }
+        });
 
-       //Save deviceId in redis
-        await RedisClient.getInstance().set(`session:${user.id}:${deviceId}`,JSON.stringify({
-          ipAddress,
-          userAgent,
-          deviceId,
-          lastActiveAt: new Date().toISOString(),
-        }), 'EX', 60 * 60 * 24 * 7);
-
+        // Create Redis session
+     await RedisClient.getInstance()
+            .multi()
+            .set(
+                `session:${user.id}:${deviceId}`,
+                JSON.stringify({
+                    ipAddress,
+                    userAgent,
+                    deviceId,
+                    lastActiveAt: new Date().toISOString()
+                }),
+                'EX',
+                60 * 60 * 24 * 7 // 7 days
+            )
+            .exec();
+        return user;
+    });
 
       const jwtAccessPayload: JwtPayload = {
         id: user.id,
@@ -225,6 +234,7 @@ export class AuthController implements IAuthController{
        return res.status(200).json({status: "success",message: "User logged in successfully",data: response});
     } catch (error) {
       console.log("Error in registerUser: ", error);
+      res.clearCookie('refreshToken');
       if(error instanceof AuthError){
         return res.status(error.statusCode).json({type: error.status,message: error.message});
       }
@@ -344,7 +354,7 @@ export class AuthController implements IAuthController{
         deviceId: decoded.deviceId,
         iat: Math.floor(Date.now() / 1000),
         isRefreshToken: false,
-    }, '10m'); // Short expiry
+    }, true); // Short expiry
 
     // Log the incident
     // monitoring.log('AUTH_DEGRADED', {
@@ -430,7 +440,6 @@ export class AuthController implements IAuthController{
   // @access Private
   public async logoutUser (req: Request, res: Response): Promise<Response<ApiResponse>>{
     try {
-
         const decoded = verifyToken(req.cookies.refreshToken,"refresh");
         await RedisClient.getInstance().del(`session:${decoded.id}:${decoded.deviceId}`);
         await this.prisma.session.deleteMany({

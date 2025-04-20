@@ -3,17 +3,22 @@ import { z } from 'zod';
 export const SignUpSchema = z.object({
     firstName: z.string().trim().min(3, { message: 'First name is required' }).max(50, { message: 'First name must be less than 50 characters' }),
     lastName: z.string().trim().min(3).max(50, { message: 'Last name must be less than 50 characters' }).optional(),
-    userName: z.string().trim().min(3, { message: 'Username is required' }).max(50, { message: 'Username must be less than 50 characters' }).regex(/^[a-zA-Z0-9_.]+$/, { message: 'Username can only contain letters, numbers, underscores, and periods' }),
-    countryCode: z.string().trim().regex(/^\+\d{1,4}$/, {message: "Country code must be in the format +123",}).optional(),
+    userName: z.string().trim().min(3, { message: 'Username is required' }).max(50, { message: 'Username must be less than 50 characters' }).regex(/^[a-zA-Z0-9_.]+$/, { message: 'Only letters, numbers, underscores (_), and periods (.) allowed' }),
+    countryCode: z.string().trim().regex(/^\+\d{1,4}$/, {message: "Country code must be in format +[1-4 digits] (e.g. +1)",}).optional(),
     phoneNumber: z.string().trim().regex(/^[0-9]{6,15}$/, { message: 'Phone number must be 6 to 15 digits long' }).optional(),
     email: z.string().trim().email({ message: 'Invalid email address' }),
-    password: z.string().trim().min(8, "Password must be at least 8 characters long").max(25,"Password cannot be more than 25 characters").regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/,{message:"Password must include at least one uppercase letter, one lowercase letter, one number, and one special character",}),
+    password: z.string().trim().min(8, "Password must be at least 8 characters long").max(25,"Password cannot be more than 25 characters") .regex(
+        /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&,])[A-Za-z\d@$!%*?&,]{8,}$/,
+        {
+          message: "Must include: 1 uppercase, 1 lowercase, 1 number, and 1 special character (@$!%*?&)"
+        }
+      ),
     profileImageUrl: z.string().trim().url({ message: 'Invalid URL' }).optional(),
 })
 
 export const LoginSchema = z.object({
     email: z.string().trim().email({ message: 'Invalid email address' }),
-    password: z.string().trim().min(8, "Password must be at least 8 characters long").max(25,"Password cannot be more than 25 characters").regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/,{message:"Password must include at least one uppercase letter, one lowercase letter, one number, and one special character",}),
+    password: z.string().trim().min(8, "Password must be at least 8 characters long").max(25,"Password cannot be more than 25 characters"),
 });
 
 export const UpdateUserProfileSchema = z.object({
